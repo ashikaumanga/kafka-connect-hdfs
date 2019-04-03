@@ -35,6 +35,9 @@ import io.confluent.connect.hdfs.partitioner.TimeBasedPartitioner;
 
 public class HdfsSinkConnectorConfig extends AbstractConfig {
 
+  public static final String CONSUMER_GROUP = "consumer.group";
+  private static final String CONSUMER_GROUP_DEFAULT = "";
+  private static final String CONSUMER_GROUP_DOC = "Consumer Group";
   // HDFS Group
   public static final String HDFS_URL_CONFIG = "hdfs.url";
   private static final String HDFS_URL_DOC =
@@ -207,6 +210,7 @@ public class HdfsSinkConnectorConfig extends AbstractConfig {
   public static final String PATH_FORMAT_DEFAULT = "";
   private static final String PATH_FORMAT_DISPLAY = "Path Format";
 
+
   public static final String LOCALE_CONFIG = "locale";
   private static final String LOCALE_DOC =
       "The locale to use when partitioning with ``TimeBasedPartitioner``.";
@@ -253,6 +257,8 @@ public class HdfsSinkConnectorConfig extends AbstractConfig {
   public static final String SCHEMA_GROUP = "Schema";
   public static final String CONNECTOR_GROUP = "Connector";
   public static final String INTERNAL_GROUP = "Internal";
+  public static final String KAFKA_GROUP = "Kafka";
+  private static final String CONSUMER_GROUP_DISPLAY = "Consumer group display";
 
   private static final ConfigDef.Recommender hiveIntegrationDependentsRecommender = new BooleanParentRecommender(HIVE_INTEGRATION_CONFIG);
   private static final ConfigDef.Recommender hdfsAuthenticationKerberosDependentsRecommender = new BooleanParentRecommender(HDFS_AUTHENTICATION_KERBEROS_CONFIG);
@@ -319,6 +325,10 @@ public class HdfsSinkConnectorConfig extends AbstractConfig {
 
     // Define Internal configuration group
     config.define(STORAGE_CLASS_CONFIG, Type.STRING, STORAGE_CLASS_DEFAULT, Importance.LOW, STORAGE_CLASS_DOC, INTERNAL_GROUP, 1, Width.MEDIUM, STORAGE_CLASS_DISPLAY);
+
+    // Define Internal configuration group
+    config.define(CONSUMER_GROUP, Type.STRING, CONSUMER_GROUP_DEFAULT, Importance.LOW, CONSUMER_GROUP_DOC, KAFKA_GROUP, 1, Width.MEDIUM, CONSUMER_GROUP_DISPLAY);
+
   }
 
   private static class SchemaCompatibilityRecommender extends BooleanParentRecommender {

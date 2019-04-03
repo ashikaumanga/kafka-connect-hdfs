@@ -16,9 +16,13 @@ package io.confluent.connect.hdfs;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
+import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.security.Credentials;
+import org.apache.hadoop.security.SaslRpcServer;
 import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.security.token.Token;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.config.ConfigException;
 import org.apache.kafka.connect.data.Schema;
@@ -28,8 +32,10 @@ import org.apache.kafka.connect.sink.SinkTaskContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.File;
 import java.io.IOException;
 import java.net.InetAddress;
+import java.security.PrivilegedAction;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -53,6 +59,8 @@ import io.confluent.connect.hdfs.hive.HiveUtil;
 import io.confluent.connect.hdfs.partitioner.Partitioner;
 import io.confluent.connect.hdfs.storage.Storage;
 import io.confluent.connect.hdfs.storage.StorageFactory;
+
+import static org.apache.hadoop.security.UserGroupInformation.HADOOP_TOKEN_FILE_LOCATION;
 
 public class DataWriter {
   private static final Logger log = LoggerFactory.getLogger(DataWriter.class);
@@ -99,7 +107,7 @@ public class DataWriter {
 
       boolean secureHadoop = connectorConfig.getBoolean(HdfsSinkConnectorConfig.HDFS_AUTHENTICATION_KERBEROS_CONFIG);
       if (secureHadoop) {
-        SecurityUtil.setAuthenticationMethod(UserGroupInformation.AuthenticationMethod.KERBEROS, conf);
+        //SecurityUtil.setAuthenticationMethod(UserGroupInformation.AuthenticationMethod.KERBEROS, conf);
         String principalConfig = connectorConfig.getString(HdfsSinkConnectorConfig.CONNECT_HDFS_PRINCIPAL_CONFIG);
         String keytab = connectorConfig.getString(HdfsSinkConnectorConfig.CONNECT_HDFS_KEYTAB_CONFIG);
 
@@ -110,7 +118,6 @@ public class DataWriter {
         }
 
         conf.set("hadoop.security.authentication", "kerberos");
-        conf.set("hadoop.security.authorization", "true");
         String hostname = InetAddress.getLocalHost().getCanonicalHostName();
         // replace the _HOST specified in the principal config to the actual host
         String principal = SecurityUtil.getServerPrincipal(principalConfig, hostname);
@@ -119,14 +126,38 @@ public class DataWriter {
         String namenodePrincipal = SecurityUtil.getServerPrincipal(namenodePrincipalConfig, hostname);
         // namenode principal is needed for multi-node hadoop cluster
         if (conf.get("dfs.namenode.kerberos.principal") == null) {
-          conf.set("dfs.namenode.kerberos.principal", namenodePrincipal);
+          //conf.set("dfs.namenode.kerberos.principal", namenodePrincipal);
         }
         log.info("Hadoop namenode principal: " + conf.get("dfs.namenode.kerberos.principal"));
 
-        UserGroupInformation.setConfiguration(conf);
-        UserGroupInformation.loginUserFromKeytab(principal, keytab);
-        final UserGroupInformation ugi = UserGroupInformation.getLoginUser();
+        String tokenLocation = System.getenv(HADOOP_TOKEN_FILE_LOCATION);
+
+        //Deletation Token file must be specified
+        if (tokenLocation == null) {
+          throw new RuntimeException("no HADOOP_TOKEN_FILE_LOCATION is configured");
+        }
+        try {
+          Thread.sleep(20000);
+        } catch (InterruptedException e) {
+          e.printStackTrace();
+        }
+        //load creadentials from the Delegation Token file
+        //TODO parameterize remote user name
+        final UserGroupInformation ugi = UserGroupInformation.createRemoteUser("datalake");
+        Credentials cred = Credentials.readTokenStorageFile(new File(tokenLocation), conf);
+        ugi.addCredentials(cred);
         log.info("Login as: " + ugi.getUserName());
+        //Do warmup
+        //TODO without this warmup, the delegatino token doesnt work.Investigate furthur the reason.
+        try {
+          FileSystem fs = FileSystem.get(conf);
+          FileStatus[] fsStatus = fs.listStatus(new Path("/"));
+          for(int i = 0; i < fsStatus.length; i++){
+            log.info("Token init " +fsStatus[i].getPath().toString());
+          }
+        } catch (Exception e) {
+          log.error("HDFS err", e);
+        }
 
         final long renewPeriod = connectorConfig.getLong(HdfsSinkConnectorConfig.KERBEROS_TICKET_RENEW_PERIOD_MS_CONFIG);
 
@@ -139,7 +170,26 @@ public class DataWriter {
                 try {
                   DataWriter.this.wait(renewPeriod);
                   if (isRunning) {
-                    ugi.reloginFromKeytab();
+                    String tokenLocation = System.getenv(HADOOP_TOKEN_FILE_LOCATION);
+                    if (tokenLocation == null) {
+                      //no token cache, call KDC
+                      ugi.reloginFromKeytab();
+                    } else {
+                      //reload from token dir
+                      final UserGroupInformation ugi = UserGroupInformation.createRemoteUser("datalake");
+                      Credentials cred = Credentials.readTokenStorageFile(new File(tokenLocation), conf);
+                      ugi.addCredentials(cred);
+                      //do warmup
+                      try {
+                        FileSystem fs = FileSystem.get(conf);
+                        FileStatus[] fsStatus = fs.listStatus(new Path("/"));
+                        for(int i = 0; i < fsStatus.length; i++){
+                          log.info("Token Renew "+fsStatus[i].getPath().toString());
+                        }
+                      } catch (Exception e) {
+                        log.error("HDFS err", e);
+                      }
+                    }
                   }
                 } catch (IOException e) {
                   // We ignore this exception during relogin as each successful relogin gives
@@ -166,6 +216,7 @@ public class DataWriter {
       Class<? extends Storage> storageClass = (Class<? extends Storage>) Class
               .forName(connectorConfig.getString(HdfsSinkConnectorConfig.STORAGE_CLASS_CONFIG));
       storage = StorageFactory.createStorage(storageClass, conf, url);
+      //StorageFactory.c
 
       createDir(topicsDir);
       createDir(topicsDir + HdfsSinkConnectorConstants.TEMPFILE_DIRECTORY);
